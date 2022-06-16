@@ -1,0 +1,213 @@
+---
+version: '2'
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper
+    restart: always
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - kafka_network
+
+  broker:
+    image: confluentinc/cp-server
+    restart: always
+    hostname: broker
+    container_name: broker
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "9101:9101"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://broker:9043,PLAINTEXT://broker:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_METRIC_REPORTERS: io.confluent.metrics.reporter.ConfluentMetricsReporter
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_CONFLUENT_LICENSE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_BALANCER_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+      KAFKA_CONFLUENT_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONFLUENT_METRICS_REPORTER_BOOTSTRAP_SERVERS: broker:29092
+      CONFLUENT_METRICS_REPORTER_TOPIC_REPLICAS: 1
+      CONFLUENT_METRICS_ENABLE: 'true'
+      CONFLUENT_SUPPORT_CUSTOMER_ID: 'anonymous'
+    networks:
+      - kafka_network
+  control-center:
+    image: confluentinc/cp-enterprise-control-center
+    restart: always
+    hostname: control-center
+    container_name: control-center
+    depends_on:
+      - broker
+    ports:
+      - "9021:9021"
+    environment:
+      CONTROL_CENTER_BOOTSTRAP_SERVERS: 'broker:29092'
+      CONTROL_CENTER_REPLICATION_FACTOR: 1
+      CONTROL_CENTER_INTERNAL_TOPICS_PARTITIONS: 1
+      CONTROL_CENTER_MONITORING_INTERCEPTOR_TOPIC_PARTITIONS: 1
+      CONFLUENT_METRICS_TOPIC_REPLICATION: 1
+      PORT: 9021
+    networks:
+      - kafka_network
+
+  init:
+    build: ../init/
+    environment:
+      kafkaURL: broker:9043
+      POSTGRES_URL: main-postgres:5432
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: postgres
+      SHARD1_URL: shard1
+      SHARD2_URL: shard2
+    depends_on:
+      - shard1
+      - main-postgres
+      - shard2
+    networks:
+      - kafka_network
+
+  warehouse:
+    build: ../warehouse/
+    restart: always
+    environment:
+      kafkaURL: broker:9043
+      POSTGRES_URL: main-postgres:5432
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: postgres
+      SHARD1_URL: shard1
+      SHARD2_URL: shard2
+    depends_on:
+      - broker
+      - shard1
+      - main-postgres
+      - shard2
+    networks:
+      - kafka_network
+  payment:
+    build: ../payment/
+    restart: always
+    environment:
+      kafkaURL: broker:9043
+    depends_on:
+      - broker
+    networks:
+      - kafka_network
+  orders:
+    build: ../order/
+    restart: always
+    environment:
+      kafkaURL: broker:9043
+      POSTGRES_URL: main-postgres:5432
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: postgres
+      SHARD1_URL: shard1
+      SHARD2_URL: shard2
+      memcachedURL: memcached:11211
+    depends_on:
+      - broker
+      - shard1
+      - main-postgres
+      - shard2
+      - memcached
+    networks:
+      - kafka_network
+  notification:
+    build: ../notification/
+    restart: always
+    environment:
+      kafkaURL: broker:9043
+    depends_on:
+      - broker
+    networks:
+      - kafka_network
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: always
+    volumes:
+      - ./prometheus:/etc/prometheus/
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    ports:
+      - 9090:9090
+    depends_on:
+      - warehouse
+      - payment
+      - orders
+      - notification
+    networks:
+      - kafka_network
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: always
+    ports:
+      - 3000:3000
+    depends_on:
+      - prometheus
+    networks:
+      - kafka_network
+
+  main-postgres:
+    build: ./postgres/
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - 5432:5432
+    networks:
+      - kafka_network
+
+  shard1:
+    build: ./shard1/
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: example
+    ports:
+      - 5433:5432
+    networks:
+      - kafka_network
+
+  shard2:
+    build: ./shard2/
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: example
+    ports:
+      - 5434:5432
+    networks:
+      - kafka_network
+
+  memcached:
+    image: memcached
+    restart: always
+    ports:
+      - 11211:11211
+    networks:
+      - kafka_network
+networks:
+  kafka_network:
+    driver: bridge
